@@ -104,28 +104,52 @@ async function relationalQuery(
   function getModelQuery(model: string) {
     return model === 'first-click'
       ? `\n 
-    model AS (select e.session_id,
-        min(we.created_at) created_at
-    from events e
-    join website_event we
-    on we.session_id = e.session_id
-    where we.website_id = {{websiteId::uuid}}
-          and we.created_at between {{startDate}} and {{endDate}}
-    group by e.session_id)`
+    model AS (
+      select
+        e.session_id,
+        x.created_at
+      from events e
+      cross join lateral (
+        select created_at
+        from website_event
+        where website_id = {{websiteId::uuid}}
+          and session_id = e.session_id
+          and created_at between {{startDate}} and {{endDate}}
+        order by created_at asc
+        limit 1
+      ) x
+    )`
       : `\n 
-    model AS (select e.session_id,
-        max(we.created_at) created_at
-    from events e
-    join website_event we
-    on we.session_id = e.session_id
-    where we.website_id = {{websiteId::uuid}}
-          and we.created_at between {{startDate}} and {{endDate}} 
-          and we.created_at < e.max_dt
-    group by e.session_id)`;
+    model AS (
+      select
+        e.session_id,
+        x.created_at
+      from events e
+      cross join lateral (
+        select created_at
+        from website_event
+        where website_id = {{websiteId::uuid}}
+          and session_id = e.session_id
+          and created_at between {{startDate}} and {{endDate}}
+          and created_at < e.max_dt
+        order by created_at desc
+        limit 1
+      ) x
+    )`;
   }
 
-  const referrerRes = await rawQuery(
-    `
+  const [
+    referrerRes,
+    paidAdsres,
+    sourceRes,
+    mediumRes,
+    campaignRes,
+    contentRes,
+    termRes,
+    totalRes,
+  ] = await Promise.all([
+    rawQuery(
+      `
     ${currency ? revenueEventQuery : eventQuery}
     ${getModelQuery(model)}
     select coalesce(we.referrer_domain, '') name,
@@ -149,11 +173,10 @@ async function relationalQuery(
     order by 2 desc
     limit 20
     `,
-    queryParams,
-  );
-
-  const paidAdsres = await rawQuery(
-    `
+      queryParams,
+    ),
+    rawQuery(
+      `
     ${currency ? revenueEventQuery : eventQuery}
     ${getModelQuery(model)},
 
@@ -182,56 +205,50 @@ async function relationalQuery(
     FROM results
     ${currency ? '' : `WHERE name != ''`}
     `,
-    queryParams,
-  );
-
-  const sourceRes = await rawQuery(
-    `
+      queryParams,
+    ),
+    rawQuery(
+      `
     ${currency ? revenueEventQuery : eventQuery}
     ${getModelQuery(model)}
     ${getUTMQuery('utm_source')}
     `,
-    queryParams,
-  );
-
-  const mediumRes = await rawQuery(
-    `
+      queryParams,
+    ),
+    rawQuery(
+      `
     ${currency ? revenueEventQuery : eventQuery}
     ${getModelQuery(model)}
     ${getUTMQuery('utm_medium')}
     `,
-    queryParams,
-  );
-
-  const campaignRes = await rawQuery(
-    `
+      queryParams,
+    ),
+    rawQuery(
+      `
     ${currency ? revenueEventQuery : eventQuery}
     ${getModelQuery(model)}
     ${getUTMQuery('utm_campaign')}
     `,
-    queryParams,
-  );
-
-  const contentRes = await rawQuery(
-    `
+      queryParams,
+    ),
+    rawQuery(
+      `
     ${currency ? revenueEventQuery : eventQuery}
     ${getModelQuery(model)}
     ${getUTMQuery('utm_content')}
     `,
-    queryParams,
-  );
-
-  const termRes = await rawQuery(
-    `
+      queryParams,
+    ),
+    rawQuery(
+      `
     ${currency ? revenueEventQuery : eventQuery}
     ${getModelQuery(model)}
     ${getUTMQuery('utm_term')}
     `,
-    queryParams,
-  );
-
-  const totalRes = await rawQuery(
-    `
+      queryParams,
+    ),
+    rawQuery(
+      `
     select 
         count(*) as "pageviews",
         count(distinct website_event.session_id) as "visitors",
@@ -244,8 +261,9 @@ async function relationalQuery(
         and website_event.${column} = {{step}}
         ${filterQuery}
     `,
-    queryParams,
-  ).then(result => result?.[0]);
+      queryParams,
+    ).then(result => result?.[0]),
+  ]);
 
   return {
     referrer: referrerRes,
